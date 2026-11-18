@@ -1,0 +1,27 @@
+# Local lakehouse output (created by run_local.py and the local tests)
+lakehouse_local/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Spark / Hive local artifacts
+derby.log
+metastore_db/
+spark-warehouse/
+
+# Secrets and local config
+.env
+*.pem
+*.key
+
+# OS and editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

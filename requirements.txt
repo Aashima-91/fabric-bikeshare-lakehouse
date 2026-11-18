@@ -1,0 +1,7 @@
+# Local development / CI only - Fabric already provides Spark and Delta.
+pyspark>=3.5
+delta-spark>=3.2        # must match your PySpark minor version (3.5.x <-> 3.2.x, 4.x <-> 4.x)
+numpy
+pandas
+openpyxl
+pytest

@@ -1,0 +1,192 @@
+// =============================================================================
+// YarraRide semantic model (sm_yarraride) - DAX measures
+// Exported from the Fabric semantic model (Direct Lake over lh_yarraride).
+// Each measure notes its home table and format string in the model.
+//
+// Relationships these rely on:
+//   fact_trip[start_station_sk] -> dim_station[station_sk]   (active)
+//   fact_trip[end_station_sk]   -> dim_station[station_sk]   (inactive, via USERELATIONSHIP)
+//   fact_trip[date_key]         -> dim_date[date]
+//   fact_trip[weather_hour_key] -> dim_weather_hour
+//   fact_trip[event_sk]         -> dim_event   (-1 = "No event")
+//   fact_trip[bike_type]        -> dim_bike_type
+// =============================================================================
+
+
+// -----------------------------------------------------------------------------
+// Core trip KPIs                                   (home table: fact_trip)
+// -----------------------------------------------------------------------------
+
+// Format: 0
+Trips =
+COUNTROWS ( fact_trip )
+
+// Format: $#,0.00
+Revenue (AUD) =
+SUM ( fact_trip[fare_aud] )
+
+Avg Trip Duration (min) =
+AVERAGE ( fact_trip[duration_min] )
+
+E-bike Share % =
+DIVIDE (
+    CALCULATE ( [Trips], dim_bike_type[bike_type] = "electric" ),
+    [Trips]
+)
+
+// Counts trips by their END station (inactive relationship activated)
+// Format: 0
+Trips Ended =
+CALCULATE (
+    [Trips],
+    USERELATIONSHIP ( fact_trip[end_station_sk], dim_station[station_sk] )
+)
+
+// Positive = station gains bikes, negative = station loses bikes
+// Format: 0
+Net Flow (ended - started) =
+[Trips Ended] - [Trips]
+
+// Excludes the UNKNOWN member and counts stations, not SCD2 versions
+// Format: 0
+Active Stations =
+COUNTROWS (
+    FILTER (
+        VALUES ( dim_station[station_id] ),
+        dim_station[station_id] <> "UNKNOWN"
+            && [Trips] > 0
+    )
+)
+
+
+// -----------------------------------------------------------------------------
+// Time intelligence                                (home table: fact_trip)
+// -----------------------------------------------------------------------------
+
+Trips 7D Avg =
+AVERAGEX (
+    DATESINPERIOD ( dim_date[date], MAX ( dim_date[date] ), -7, DAY ),
+    [Trips]
+)
+
+// Format: 0
+Trips Prior Week =
+CALCULATE ( [Trips], DATEADD ( dim_date[date], -7, DAY ) )
+
+Trips vs Prior Week % =
+DIVIDE ( [Trips] - [Trips Prior Week], [Trips Prior Week] )
+
+
+// -----------------------------------------------------------------------------
+// Weather and events          (home: dim_weather_hour; Event Trips: fact_trip)
+// Divide by hours in the weather dimension so rainy and dry hours are
+// compared per hour, not in total (there are far fewer rainy hours).
+// -----------------------------------------------------------------------------
+
+Avg Trips per Hour =
+DIVIDE ( [Trips], COUNTROWS ( dim_weather_hour ) )
+
+Avg Trips per Hour (Rain) =
+CALCULATE (
+    DIVIDE ( [Trips], COUNTROWS ( dim_weather_hour ) ),
+    dim_weather_hour[is_raining] = TRUE ()
+)
+
+Avg Trips per Hour (Dry) =
+CALCULATE (
+    DIVIDE ( [Trips], COUNTROWS ( dim_weather_hour ) ),
+    dim_weather_hour[is_raining] = FALSE ()
+)
+
+Rain Impact on Demand % =
+DIVIDE (
+    [Avg Trips per Hour (Rain)] - [Avg Trips per Hour (Dry)],
+    [Avg Trips per Hour (Dry)]
+)
+
+// Format: 0
+Event Trips =
+CALCULATE ( [Trips], fact_trip[event_sk] <> -1 )
+
+
+// -----------------------------------------------------------------------------
+// Station / rebalancing                          (home table: mart_station_day)
+// Sourced from mart_station_day, so only valid with dim_date and
+// dim_station_current on the visual.
+// -----------------------------------------------------------------------------
+
+// Format: 0
+Trips Started (station-day) =
+SUM ( mart_station_day[trips_started] )
+
+Avg Daily Net Flow =
+AVERAGE ( mart_station_day[net_flow] )
+
+Avg Turnover per Dock =
+AVERAGE ( mart_station_day[turnover_per_dock] )
+
+Rebalancing Priority =
+VAR flow = [Avg Daily Net Flow]
+RETURN
+    SWITCH (
+        TRUE (),
+        flow <= -8, "Restock bikes",
+        flow >= 8,  "Remove bikes",
+        "Balanced"
+    )
+
+
+// -----------------------------------------------------------------------------
+// Pipeline health and data quality
+// (home: pipeline_run_log for Success Rate and Layer Order; dq_results for the rest)
+// -----------------------------------------------------------------------------
+
+Pipeline Step Success Rate % =
+DIVIDE (
+    CALCULATE ( COUNTROWS ( pipeline_run_log ), pipeline_run_log[status] = "SUCCESS" ),
+    COUNTROWS ( pipeline_run_log )
+)
+
+// Error-severity reconciliation checks only; warnings do not count against it
+Critical Checks Passed % =
+DIVIDE (
+    CALCULATE (
+        COUNTROWS ( dq_results ),
+        dq_results[check_type] = "reconciliation",
+        dq_results[severity]   = "error",
+        dq_results[status]     = "PASS"
+    ),
+    CALCULATE (
+        COUNTROWS ( dq_results ),
+        dq_results[check_type] = "reconciliation",
+        dq_results[severity]   = "error"
+    )
+)
+
+// Quarantined trips / trips read by the Silver "trips" step
+Quarantine Rate % (trips) =
+DIVIDE (
+    CALCULATE (
+        SUM ( quarantine_summary[rows_quarantined] ),
+        quarantine_summary[source_table] = "silver.trips"
+    ),
+    CALCULATE (
+        SUM ( pipeline_run_log[rows_read] ),
+        pipeline_run_log[layer] = "silver",
+        pipeline_run_log[step]  = "trips"
+    )
+)
+
+// Format: General Date
+Last Load (UTC) =
+MAX ( pipeline_run_log[ended_at] )
+
+// Sort helper so layers show bronze > silver > gold
+// Format: 0
+Layer Order =
+SWITCH (
+    MAX ( pipeline_run_log[layer] ),
+    "bronze", 1,
+    "silver", 2,
+    "gold",   3
+)
